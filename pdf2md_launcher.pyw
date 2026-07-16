@@ -101,6 +101,7 @@ class Pdf2MdWindow(tk.Tk):
 
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.after(80, self._poll_queue)
+        self._autoclose_scheduled = False
 
         self.worker = threading.Thread(target=self._run_conversion, daemon=True)
         self.worker.start()
@@ -125,10 +126,22 @@ class Pdf2MdWindow(tk.Tk):
             if self.failed:
                 self.title("pdf2md - BŁĄD konwersji")
             else:
-                self.title("pdf2md - gotowe ✔")
+                self.title("pdf2md - gotowe ✔ (zamknięcie za 10s...)")
                 self.open_btn.configure(state="normal")
+                if not self._autoclose_scheduled:
+                    self._autoclose_scheduled = True
+                    self.after(10000, self._safe_destroy)
         else:
             self.after(80, self._poll_queue)
+
+    def _safe_destroy(self) -> None:
+        # Nie zamykaj automatycznie, jeśli w międzyczasie coś jednak poszło nie tak
+        # (np. użytkownik jeszcze czyta log) - tylko przy potwierdzonym sukcesie.
+        if self.finished and not self.failed:
+            try:
+                self.destroy()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _run_conversion(self) -> None:
         old_stdout, old_stderr = sys.stdout, sys.stderr
