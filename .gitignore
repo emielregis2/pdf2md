@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Pliki wynikowe konwersji (nie commitujemy przykładowych PDF/MD)
+*.pdf
+*.md
+!README.md
+!INSTALACJA.md
+
+# Pliki tymczasowe launchera / konwertera
+.*_tmp/
+
+# System
+.DS_Store
+Thumbs.db
