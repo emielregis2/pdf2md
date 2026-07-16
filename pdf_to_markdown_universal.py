@@ -99,32 +99,61 @@ def _ensure_tesseract_available() -> None:
     do zmiennej PATH, przez co `pytesseract`/`img2table` nie znajdują silnika OCR
     mimo poprawnej instalacji. Sprawdzamy typowe lokalizacje i ustawiamy ścieżkę
     jawnie, zanim cokolwiek spróbuje wywołać tesseract.
+
+    Dodatkowo: jeśli obok tego skryptu istnieje lokalny podkatalog `tessdata/`
+    (np. z dodatkowym pakietem językowym `pol.traineddata`, którego nie udało
+    się zainstalować do systemowego katalogu Tesseract z powodu braku uprawnień
+    administratora), ustawiamy TESSDATA_PREFIX na ten lokalny katalog. Dzięki
+    temu działa to bez uprawnień admina i bez polegania na propagacji zmiennych
+    środowiskowych Windows (która bywa zawodna bez wylogowania/restartu sesji).
     """
     import os
     import shutil
 
-    if shutil.which("tesseract"):
-        return  # jest w PATH, nic nie trzeba robić
+    tesseract_cmd = shutil.which("tesseract")
 
-    candidates = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            pytesseract.pytesseract.tesseract_cmd = candidate
-            os.environ["TESSDATA_PREFIX"] = str(Path(candidate).parent / "tessdata")
-            return
+    if not tesseract_cmd:
+        candidates = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                tesseract_cmd = candidate
+                pytesseract.pytesseract.tesseract_cmd = candidate
+                break
 
-    print(
-        "UWAGA: Nie znaleziono silnika Tesseract OCR ani w PATH, ani w typowych "
-        "lokalizacjach instalacji na Windows. Konwersja zeskanowanych PDF-ów nie "
-        "zadziała, dopóki nie zainstalujesz Tesseract OCR:\n"
-        "  https://github.com/UB-Mannheim/tesseract/wiki\n"
-        "Podczas instalacji zaznacz dodatkowe pakiety językowe (np. Polish).",
-        file=sys.stderr,
-    )
+    if not tesseract_cmd:
+        print(
+            "UWAGA: Nie znaleziono silnika Tesseract OCR ani w PATH, ani w typowych "
+            "lokalizacjach instalacji na Windows. Konwersja zeskanowanych PDF-ów nie "
+            "zadziała, dopóki nie zainstalujesz Tesseract OCR:\n"
+            "  https://github.com/UB-Mannheim/tesseract/wiki\n"
+            "Podczas instalacji zaznacz dodatkowe pakiety językowe (np. Polish).",
+            file=sys.stderr,
+        )
+        return
+
+    # Silnik znaleziony - teraz sprawdzamy, czy ma potrzebne pakiety językowe.
+    # Priorytet ma lokalny katalog tessdata/ obok tego skryptu (nie wymaga
+    # uprawnień administratora), a dopiero potem katalog systemowy.
+    local_tessdata = Path(__file__).resolve().parent / "tessdata"
+    system_tessdata = Path(tesseract_cmd).parent / "tessdata"
+
+    if (local_tessdata / "pol.traineddata").exists():
+        os.environ["TESSDATA_PREFIX"] = str(local_tessdata)
+    elif (system_tessdata / "pol.traineddata").exists():
+        os.environ["TESSDATA_PREFIX"] = str(system_tessdata)
+    else:
+        print(
+            "UWAGA: Silnik Tesseract OCR jest zainstalowany, ale brakuje pakietu "
+            "językowego 'pol' (polski). OCR zadziała tylko dla języka angielskiego.\n"
+            "Pobierz pol.traineddata z https://github.com/tesseract-ocr/tessdata_fast "
+            "i umieść w katalogu tessdata Tesseract (lub w folderze 'tessdata' obok "
+            "tego skryptu, jeśli nie masz uprawnień administratora).",
+            file=sys.stderr,
+        )
 
 
 _ensure_tesseract_available()
@@ -483,10 +512,14 @@ def convert_pdf(
 
     doc.close()
 
-    # Sprzątanie plików tymczasowych
-    for f in tmp_dir.glob("*"):
-        f.unlink()
-    tmp_dir.rmdir()
+    # Sprzątanie plików tymczasowych - błędy tutaj (np. OneDrive blokujący folder)
+    # NIE powinny przerywać konwersji, skoro dokument już został przetworzony.
+    try:
+        for f in tmp_dir.glob("*"):
+            f.unlink()
+        tmp_dir.rmdir()
+    except OSError as exc:
+        print(f"  [ostrzeżenie] nie udało się usunąć folderu tymczasowego {tmp_dir}: {exc}", file=sys.stderr)
 
     # Usuwanie powtarzalnych nagłówków/stopek
     if config.strip_repeated_headers:
