@@ -5,7 +5,7 @@ __pycache__/
 .venv/
 venv/
 
-# Pliki wynikowe konwersji (nie commitujemy przykładowych PDF/MD)
+# Pliki wynikowe konwersji (nie commitujemy przykladowych PDF/MD)
 *.pdf
 *.md
 !README.md

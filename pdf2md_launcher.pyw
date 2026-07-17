@@ -2,8 +2,9 @@
 """
 pdf2md_launcher.pyw
 ---------------------
-Launcher GUI dla konwertera PDF -> Markdown, przeznaczony do wywoływania
-z menu kontekstowego Eksploratora Windows (prawy klawisz na pliku .pdf).
+Launcher GUI dla konwertera PDF/DOCX/DOC/XLSX/XLS -> Markdown, przeznaczony do
+wywoływania z menu kontekstowego Eksploratora Windows (prawy klawisz na
+pliku .pdf/.docx/.doc/.xlsx/.xls).
 
 Rozszerzenie .pyw sprawia, że skrypt uruchamia się przez pythonw.exe,
 czyli BEZ okna konsoli w tle - użytkownik widzi tylko małe okienko postępu.
@@ -30,12 +31,14 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
 
+SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".doc", ".xlsx", ".xls")
+
 # Katalog, w którym leży ten plik - stąd importujemy właściwy konwerter
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    from pdf_to_markdown_universal import convert_pdf, ConversionConfig
+    from pdf_to_markdown_universal import convert_document, ConversionConfig
 except Exception as exc:  # noqa: BLE001
     # Jeśli brakuje zależności / modułu, pokaż to w oknie zamiast wywalać się bez śladu
     import tkinter.messagebox as mb
@@ -45,7 +48,7 @@ except Exception as exc:  # noqa: BLE001
         "pdf2md - błąd startu",
         "Nie udało się załadować modułu konwertera "
         f"(pdf_to_markdown_universal.py):\n\n{exc}\n\n"
-        "Sprawdź, czy wszystkie zależności są zainstalowane (patrz README_INSTALACJA_WINDOWS.md).",
+        "Sprawdź, czy wszystkie zależności są zainstalowane (patrz INSTALACJA.md).",
     )
     sys.exit(1)
 
@@ -65,19 +68,19 @@ class QueueWriter:
 
 
 class Pdf2MdWindow(tk.Tk):
-    def __init__(self, pdf_path: Path):
+    def __init__(self, doc_path: Path):
         super().__init__()
-        self.pdf_path = pdf_path
+        self.doc_path = doc_path
         self.output_path: Path | None = None
         self.finished = False
         self.failed = False
 
-        self.title("pdf2md - konwersja do Markdown")
+        self.title("pdf2md")
         self.geometry("640x420")
         self.minsize(480, 300)
 
         label = tk.Label(
-            self, text=f"Konwertuję: {pdf_path.name}", font=("Segoe UI", 10, "bold"), anchor="w"
+            self, text=f"Konwertuję: {doc_path.name}", font=("Segoe UI", 10, "bold"), anchor="w"
         )
         label.pack(fill="x", padx=10, pady=(10, 4))
 
@@ -150,7 +153,7 @@ class Pdf2MdWindow(tk.Tk):
         sys.stderr = writer
         try:
             config = ConversionConfig(lang="pol+eng", dpi=300)
-            out_path = convert_pdf(self.pdf_path, config=config, show_stats=True)
+            out_path = convert_document(self.doc_path, config=config, show_stats=True)
             self.output_path = out_path
             self.log_queue.put("\n=== KONWERSJA ZAKOŃCZONA POMYŚLNIE ===\n")
         except Exception:  # noqa: BLE001
@@ -173,20 +176,24 @@ def main() -> None:
         root.withdraw()
         messagebox.showerror(
             "pdf2md",
-            "Nie podano ścieżki do pliku PDF.\n\n"
+            "Nie podano ścieżki do pliku.\n\n"
             "Ten program jest przeznaczony do uruchamiania z menu kontekstowego "
-            "Eksploratora Windows (prawy klawisz na pliku .pdf -> pdf2md).",
+            "Eksploratora Windows (prawy klawisz na pliku .pdf/.docx/.doc -> pdf2md).",
         )
         sys.exit(1)
 
-    pdf_path = Path(sys.argv[1])
-    if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+    doc_path = Path(sys.argv[1])
+    if not doc_path.exists() or doc_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("pdf2md", f"To nie jest prawidłowy plik PDF:\n{pdf_path}")
+        messagebox.showerror(
+            "pdf2md",
+            f"To nie jest obsługiwany plik:\n{doc_path}\n\n"
+            f"Obsługiwane formaty: {', '.join(SUPPORTED_EXTENSIONS)}",
+        )
         sys.exit(1)
 
-    app = Pdf2MdWindow(pdf_path)
+    app = Pdf2MdWindow(doc_path)
     app.mainloop()
 
 

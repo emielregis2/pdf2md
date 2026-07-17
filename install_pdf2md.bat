@@ -52,12 +52,32 @@ echo Sprawdzam zainstalowane biblioteki Pythona...
 if defined PYTHON_EXE (
     "%PYTHON_EXE%" -c "import fitz, pymupdf4llm, img2table, pytesseract, pandas" 2>nul
     if errorlevel 1 (
-        echo [OSTRZEZENIE] Brakuje niektorych bibliotek Pythona.
+        echo [OSTRZEZENIE] Brakuje niektorych bibliotek Pythona ^(obsluga PDF^).
         echo               Zainstaluj je poleceniem:
         echo               pip install pymupdf4llm pymupdf img2table pytesseract pandas tabulate pillow
         echo.
         echo Instalacja menu kontekstowego bedzie kontynuowana, ale konwersja
         echo nie zadziala, dopoki nie doinstalujesz brakujacych bibliotek.
+        echo.
+        pause
+    )
+    "%PYTHON_EXE%" -c "import mammoth, markdownify" 2>nul
+    if errorlevel 1 (
+        echo [OSTRZEZENIE] Brakuje bibliotek do obslugi Worda ^(.docx^).
+        echo               Zainstaluj je poleceniem:
+        echo               pip install mammoth markdownify
+        echo.
+        echo Konwersja PDF bedzie dzialac bez tego - konwersja .docx/.doc nie.
+        echo.
+        pause
+    )
+    "%PYTHON_EXE%" -c "import openpyxl" 2>nul
+    if errorlevel 1 (
+        echo [OSTRZEZENIE] Brakuje biblioteki do obslugi Excela ^(.xlsx^).
+        echo               Zainstaluj ja poleceniem:
+        echo               pip install openpyxl
+        echo.
+        echo Konwersja PDF/Word bedzie dzialac bez tego - konwersja .xlsx/.xls nie.
         echo.
         pause
     )
@@ -76,10 +96,38 @@ set "LAUNCHER_ESC=%LAUNCHER:\=\\%"
     echo Windows Registry Editor Version 5.00
     echo.
     echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\pdf2md]
-    echo @="Konwertuj do Markdown ^(pdf2md^)"
+    echo @="pdf2md"
     echo "Icon"="%PYTHONW_ESC%,0"
     echo.
     echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\pdf2md\command]
+    echo @="\"%PYTHONW_ESC%\" \"%LAUNCHER_ESC%\" \"%%1\""
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.docx\shell\pdf2md]
+    echo @="pdf2md"
+    echo "Icon"="%PYTHONW_ESC%,0"
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.docx\shell\pdf2md\command]
+    echo @="\"%PYTHONW_ESC%\" \"%LAUNCHER_ESC%\" \"%%1\""
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.doc\shell\pdf2md]
+    echo @="pdf2md"
+    echo "Icon"="%PYTHONW_ESC%,0"
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.doc\shell\pdf2md\command]
+    echo @="\"%PYTHONW_ESC%\" \"%LAUNCHER_ESC%\" \"%%1\""
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.xlsx\shell\pdf2md]
+    echo @="pdf2md"
+    echo "Icon"="%PYTHONW_ESC%,0"
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.xlsx\shell\pdf2md\command]
+    echo @="\"%PYTHONW_ESC%\" \"%LAUNCHER_ESC%\" \"%%1\""
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.xls\shell\pdf2md]
+    echo @="pdf2md"
+    echo "Icon"="%PYTHONW_ESC%,0"
+    echo.
+    echo [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.xls\shell\pdf2md\command]
     echo @="\"%PYTHONW_ESC%\" \"%LAUNCHER_ESC%\" \"%%1\""
 )
 
@@ -98,8 +146,8 @@ del "%REG_FILE%" >nul 2>&1
 
 echo.
 echo ============================================================
-echo   GOTOWE! Kliknij prawym klawiszem na dowolny plik .pdf
-echo   i wybierz "Konwertuj do Markdown (pdf2md)"
+echo   GOTOWE! Kliknij prawym klawiszem na dowolny plik .pdf/.docx/.doc/.xlsx/.xls
+echo   i wybierz "pdf2md"
 echo ============================================================
 echo.
 echo Uwaga: jesli uzywasz aplikacji "Files" (files.community) zamiast

@@ -1,6 +1,6 @@
-# pdf2md — konwersja PDF → Markdown z menu kontekstowego Eksploratora
+# pdf2md — konwersja PDF/DOCX/DOC → Markdown z menu kontekstowego Eksploratora
 
-Po instalacji: **prawy klawisz na pliku `.pdf` → "Konwertuj do Markdown (pdf2md)"**
+Po instalacji: **prawy klawisz na pliku `.pdf`/`.docx`/`.doc` → "pdf2md"**
 → w tym samym katalogu powstaje plik `.md`.
 
 Działa zarówno w natywnym Eksploratorze Windows, jak i w aplikacji **Files**
@@ -57,6 +57,15 @@ Otwórz terminal (PowerShell) i uruchom:
 pip install pymupdf4llm pymupdf img2table pytesseract pandas tabulate pillow
 ```
 
+Jeśli chcesz też konwertować pliki Word (`.docx`), dodatkowo:
+```
+pip install mammoth markdownify
+```
+
+Do starych plików `.doc` (nie `.docx`) potrzebny jest zainstalowany Microsoft
+Word oraz `pip install pywin32` — bez tego stare `.doc` nie zostaną obsłużone
+(trzeba je wtedy ręcznie zapisać w Wordzie jako `.docx`).
+
 ### 4. Umieść pliki i uruchom instalator
 
 1. Skopiuj wszystkie 4 pliki z tej paczki do jednego katalogu, np. `C:\Narzedzia\pdf2md\`
@@ -86,7 +95,7 @@ uprawnień admina) coś w rodzaju:
 
 ```
 [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\pdf2md]
-@="Konwertuj do Markdown (pdf2md)"
+@="pdf2md"
 
 [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\pdf2md\command]
 @="\"C:\\Python312\\pythonw.exe\" \"C:\\Narzedzia\\pdf2md\\pdf2md_launcher.pyw\" \"%1\""

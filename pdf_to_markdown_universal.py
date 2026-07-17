@@ -49,11 +49,31 @@ Użycie jako moduł:
 from __future__ import annotations
 
 import argparse
+import datetime
+import os
 import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# --- Kodowanie stdout/stderr -----------------------------------------------
+# Pod pythonw.exe (uruchamianie BEZ konsoli - dokładnie tak działa wywołanie
+# z menu kontekstowego Eksploratora) sys.stdout/sys.stderr bywają None, a
+# zwykłe print() na None się wywala. Tam, gdzie konsola jednak istnieje
+# (uruchomienie z cmd/PowerShell), domyślne kodowanie konsoli Windows
+# (cp852/cp1250) potrafi zamieniać polskie znaki (ą, ć, ę, ł, ń, ó, ś, ż, ź)
+# w "krzaki". Ustawiamy to najwcześniej, jak się da - zanim padnie pierwszy
+# print() gdziekolwiek w tym module.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name)
+    if _stream is None:
+        setattr(sys, _stream_name, open(os.devnull, "w", encoding="utf-8"))
+    elif hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
 
 # --- Zależności zewnętrzne (z czytelnym komunikatem, gdy czegoś brakuje) ---
 _MISSING = []
@@ -95,24 +115,24 @@ if _MISSING:
 
 def _ensure_tesseract_available() -> None:
     """
-    Na Windows instalator Tesseract (UB Mannheim) domyślnie NIE dopisuje ścieżki
-    do zmiennej PATH, przez co `pytesseract`/`img2table` nie znajdują silnika OCR
-    mimo poprawnej instalacji. Sprawdzamy typowe lokalizacje i ustawiamy ścieżkę
-    jawnie, zanim cokolwiek spróbuje wywołać tesseract.
-
-    Dodatkowo: jeśli obok tego skryptu istnieje lokalny podkatalog `tessdata/`
-    (np. z dodatkowym pakietem językowym `pol.traineddata`, którego nie udało
-    się zainstalować do systemowego katalogu Tesseract z powodu braku uprawnień
-    administratora), ustawiamy TESSDATA_PREFIX na ten lokalny katalog. Dzięki
-    temu działa to bez uprawnień admina i bez polegania na propagacji zmiennych
-    środowiskowych Windows (która bywa zawodna bez wylogowania/restartu sesji).
+    Konfiguruje ścieżkę do silnika Tesseract OCR ORAZ, niezależnie od niej,
+    ścieżkę do katalogu z danymi językowymi (tessdata). To dwa osobne, częste
+    źródła problemów na Windows:
+      1. tesseract.exe bywa zainstalowany, ale nie dopisany do PATH (domyślne
+         zachowanie instalatora UB Mannheim),
+      2. nawet gdy tesseract.exe JEST w PATH, zainstalowany pakiet językowy
+         może nie obejmować potrzebnego języka (np. nie zaznaczono "Polish"
+         przy instalacji) - wtedy img2table/pytesseract zgłaszają błąd
+         "trained data cannot be located", mimo że sam silnik działa poprawnie.
+    Dlatego szukamy tessdata ZAWSZE, również gdy tesseract.exe jest już w PATH -
+    z priorytetem dla katalogu "tessdata" leżącego obok tego skryptu (jeśli
+    ktoś ręcznie dołożył tam brakujące pakiety językowe).
     """
     import os
     import shutil
 
-    tesseract_cmd = shutil.which("tesseract")
-
-    if not tesseract_cmd:
+    # --- 1) silnik tesseract.exe ---
+    if not shutil.which("tesseract"):
         candidates = [
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -120,40 +140,52 @@ def _ensure_tesseract_available() -> None:
         ]
         for candidate in candidates:
             if candidate and Path(candidate).exists():
-                tesseract_cmd = candidate
                 pytesseract.pytesseract.tesseract_cmd = candidate
                 break
+        else:
+            print(
+                "UWAGA: Nie znaleziono silnika Tesseract OCR ani w PATH, ani w typowych "
+                "lokalizacjach instalacji na Windows. Konwersja zeskanowanych PDF-ów nie "
+                "zadziała, dopóki nie zainstalujesz Tesseract OCR:\n"
+                "  https://github.com/UB-Mannheim/tesseract/wiki\n"
+                "Podczas instalacji zaznacz dodatkowe pakiety językowe (np. Polish).",
+                file=sys.stderr,
+            )
 
-    if not tesseract_cmd:
-        print(
-            "UWAGA: Nie znaleziono silnika Tesseract OCR ani w PATH, ani w typowych "
-            "lokalizacjach instalacji na Windows. Konwersja zeskanowanych PDF-ów nie "
-            "zadziała, dopóki nie zainstalujesz Tesseract OCR:\n"
-            "  https://github.com/UB-Mannheim/tesseract/wiki\n"
-            "Podczas instalacji zaznacz dodatkowe pakiety językowe (np. Polish).",
-            file=sys.stderr,
-        )
-        return
+    # --- 2) katalog z danymi językowymi (tessdata) ---
+    # UWAGA: nie ufamy ślepo już ustawionej zmiennej TESSDATA_PREFIX (np. przez
+    # system, wcześniejszy instalator albo ręczną, błędną konfigurację) - jeśli
+    # wskazuje na folder, który nie istnieje albo nie ma w nim plików .traineddata,
+    # traktujemy to tak, jakby zmienna nie była ustawiona wcale, i szukamy dalej.
+    def _tessdata_dir_is_valid(path_str: str | None) -> bool:
+        if not path_str:
+            return False
+        try:
+            p = Path(path_str)
+            return p.is_dir() and any(p.glob("*.traineddata"))
+        except OSError:
+            return False
 
-    # Silnik znaleziony - teraz sprawdzamy, czy ma potrzebne pakiety językowe.
-    # Priorytet ma lokalny katalog tessdata/ obok tego skryptu (nie wymaga
-    # uprawnień administratora), a dopiero potem katalog systemowy.
-    local_tessdata = Path(__file__).resolve().parent / "tessdata"
-    system_tessdata = Path(tesseract_cmd).parent / "tessdata"
-
-    if (local_tessdata / "pol.traineddata").exists():
-        os.environ["TESSDATA_PREFIX"] = str(local_tessdata)
-    elif (system_tessdata / "pol.traineddata").exists():
-        os.environ["TESSDATA_PREFIX"] = str(system_tessdata)
-    else:
-        print(
-            "UWAGA: Silnik Tesseract OCR jest zainstalowany, ale brakuje pakietu "
-            "językowego 'pol' (polski). OCR zadziała tylko dla języka angielskiego.\n"
-            "Pobierz pol.traineddata z https://github.com/tesseract-ocr/tessdata_fast "
-            "i umieść w katalogu tessdata Tesseract (lub w folderze 'tessdata' obok "
-            "tego skryptu, jeśli nie masz uprawnień administratora).",
-            file=sys.stderr,
-        )
+    if not _tessdata_dir_is_valid(os.environ.get("TESSDATA_PREFIX")):
+        local_tessdata = Path(__file__).resolve().parent / "tessdata"
+        tessdata_candidates = [
+            local_tessdata,  # priorytet: ręcznie dołożony pakiet obok skryptu
+            Path(r"C:\Program Files\Tesseract-OCR\tessdata"),
+            Path(r"C:\Program Files (x86)\Tesseract-OCR\tessdata"),
+        ]
+        for td in tessdata_candidates:
+            if _tessdata_dir_is_valid(str(td)):
+                os.environ["TESSDATA_PREFIX"] = str(td)
+                break
+        else:
+            print(
+                "UWAGA: Nie znaleziono katalogu tessdata (danych językowych OCR) - "
+                "ani obok tego skryptu, ani w typowej lokalizacji instalacji Tesseract. "
+                "Rozpoznawanie tekstu ze skanów może się nie powieść z błędem "
+                "'trained data cannot be located'. Umieść potrzebne pliki .traineddata "
+                f"(np. pol.traineddata, eng.traineddata) w katalogu: {local_tessdata}",
+                file=sys.stderr,
+            )
 
 
 _ensure_tesseract_available()
@@ -174,6 +206,8 @@ class ConversionConfig:
     repeated_line_threshold: float = 0.4  # linia uznana za "powtarzalną", gdy występuje na >=40% stron
     collapse_whitespace: bool = True
     table_min_confidence: bool = True  # img2table: implicit_rows/columns detection
+    xlsx_max_rows_per_sheet: int = 300     # twardy limit wierszy na arkusz (ochrona tokenów)
+    xlsx_skip_hidden_sheets: bool = True   # pomijaj arkuszy ukryte (zwykle robocze/pomocnicze)
 
 
 @dataclass
@@ -512,14 +546,27 @@ def convert_pdf(
 
     doc.close()
 
-    # Sprzątanie plików tymczasowych - błędy tutaj (np. OneDrive blokujący folder)
-    # NIE powinny przerywać konwersji, skoro dokument już został przetworzony.
+    # Sprzątanie plików tymczasowych. Może się nie udać, jeśli folder leży w
+    # OneDrive (lub podobnej usłudze synchronizacji), która chwilowo blokuje
+    # pliki podczas indeksowania - to NIE powinno przerywać konwersji, skoro
+    # dokument został już poprawnie przetworzony, więc łapiemy błąd i tylko
+    # ostrzegamy, zamiast wywalać cały proces.
     try:
         for f in tmp_dir.glob("*"):
             f.unlink()
         tmp_dir.rmdir()
     except OSError as exc:
-        print(f"  [ostrzeżenie] nie udało się usunąć folderu tymczasowego {tmp_dir}: {exc}", file=sys.stderr)
+        print(
+            f"  [ostrzeżenie] nie udało się usunąć folderu tymczasowego {tmp_dir}: {exc}\n"
+            "  (prawdopodobnie folder jest chwilowo zablokowany przez OneDrive - "
+            "można go usunąć ręcznie później, konwersja i tak się dokończy)",
+            file=sys.stderr,
+        )
+
+    # Zrzut treści PRZED czyszczeniem (nagłówki/stopki, białe znaki) - potrzebny
+    # tylko do statystyk, żeby pokazać, ile dała sama optymalizacja.
+    raw_parts = [p.markdown.strip() for p in page_results if p.markdown.strip()]
+    raw_md = "\n\n".join(raw_parts)
 
     # Usuwanie powtarzalnych nagłówków/stopek
     if config.strip_repeated_headers:
@@ -541,35 +588,549 @@ def convert_pdf(
 
     print(f"Zapisano: {output_path}")
     if show_stats:
-        _print_stats(pdf_path, final_md, n_scanned, len(page_results))
+        _print_stats(pdf_path, raw_md, final_md, n_scanned, len(page_results))
 
     return output_path
 
 
-def _print_stats(pdf_path: Path, final_md: str, n_scanned: int, n_pages: int) -> None:
+def _estimate_tokens(text: str) -> int:
+    """Bardzo zgrubne oszacowanie liczby tokenów (dla PL ~3.3 znaku/token)."""
+    return int(len(text) / 3.3)
+
+
+def _fmt_int(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def _print_stats(pdf_path: Path, raw_md: str, final_md: str, n_scanned: int, n_pages: int) -> None:
     pdf_size_kb = pdf_path.stat().st_size / 1024
-    n_chars = len(final_md)
-    # bardzo zgrubne oszacowanie tokenów (dla modeli GPT/Claude ~4 znaki/token dla języka angielskiego,
-    # dla polskiego zwykle nieco mniej znaków/token ze względu na diakrytyki - przyjmujemy ~3.3)
-    est_tokens = int(n_chars / 3.3)
+
+    raw_tokens = _estimate_tokens(raw_md)
+    final_chars = len(final_md)
+    final_tokens = _estimate_tokens(final_md)
+
+    # Wg oficjalnej dokumentacji Claude API (platform.claude.com/docs/en/build-with-claude/pdf-support):
+    # gdy PDF trafia do modelu BEZPOŚREDNIO jako dokument (a nie jako Markdown),
+    # każda strona jest liczona jako 1500-3000 tokenów (tekst + reprezentacja
+    # obrazu strony), niezależnie od tego, jak mało faktycznego tekstu zawiera.
+    pdf_tokens_low = n_pages * 1500
+    pdf_tokens_high = n_pages * 3000
+
     print("\n--- Statystyki ---")
-    print(f"Stron ogółem:        {n_pages}")
-    print(f"Stron przez OCR:     {n_scanned}")
-    print(f"Rozmiar PDF:         {pdf_size_kb:.1f} KB")
-    print(f"Znaków w Markdown:   {n_chars:,}".replace(",", " "))
-    print(f"Szac. liczba tokenów: ~{est_tokens:,}".replace(",", " "))
+    print(f"Stron ogółem:            {n_pages}")
+    print(f"Stron przez OCR:         {n_scanned}")
+    print(f"Rozmiar PDF:             {pdf_size_kb:.1f} KB")
+    print()
+    print("Wynikowy plik Markdown:")
+    print(f"  Znaków:                {_fmt_int(final_chars)}")
+    print(f"  Szac. liczba tokenów:  ~{_fmt_int(final_tokens)}")
+    print()
+    print("Dla porównania - ten sam PDF wysłany bezpośrednio do Claude*:")
+    print(f"  Szac. liczba tokenów:  ~{_fmt_int(pdf_tokens_low)} - {_fmt_int(pdf_tokens_high)}")
+
+    if pdf_tokens_low > final_tokens:
+        saved_low = pdf_tokens_low - final_tokens
+        saved_high = pdf_tokens_high - final_tokens
+        pct_low = 100 * saved_low / pdf_tokens_low if pdf_tokens_low else 0
+        pct_high = 100 * saved_high / pdf_tokens_high if pdf_tokens_high else 0
+        print()
+        print("Oszacowana oszczędność dzięki konwersji na Markdown:")
+        print(f"  ~{_fmt_int(saved_low)} - {_fmt_int(saved_high)} tokenów  "
+              f"(ok. {pct_low:.0f}% - {pct_high:.0f}% mniej)")
+
+    if raw_tokens > final_tokens:
+        cleanup_saved = raw_tokens - final_tokens
+        print(f"\n(Samo czyszczenie nagłówków/stopek i białych znaków w tym pliku")
+        print(f" zaoszczędziło dodatkowo ~{_fmt_int(cleanup_saved)} tokenów)")
+
+    print("\n* wg dokumentacji Anthropic: platform.claude.com/docs/en/build-with-claude/pdf-support")
+    print("  (każda strona PDF-a liczona jako 1500-3000 tokenów: tekst + obraz strony)")
 
 
-def convert_many(pdf_paths: list[Path], output_dir: Path | None, config: ConversionConfig) -> None:
-    ok, failed = [], []
-    for pdf_path in pdf_paths:
+# ============================================================================
+# Obsługa dokumentów WORD (.docx oraz stary format .doc)
+# ============================================================================
+
+def _convert_docx_to_markdown(docx_path: Path) -> str:
+    """
+    Konwertuje plik .docx na Markdown przez mammoth (docx -> HTML, z zachowaniem
+    nagłówków, list, pogrubień, tabel na podstawie stylów Worda) + markdownify
+    (HTML -> Markdown). Obie biblioteki są czysto pythonowe (bez zewnętrznych
+    programów), instalowane osobno od reszty, bo nie każdy użytkownik pdf2md
+    potrzebuje obsługi Worda.
+    """
+    try:
+        import mammoth
+    except ImportError as exc:
+        raise RuntimeError(
+            "Do konwersji plików Word (.docx) potrzebna jest biblioteka 'mammoth'.\n"
+            "Zainstaluj ją poleceniem:\n"
+            "    pip install mammoth markdownify"
+        ) from exc
+    try:
+        from markdownify import markdownify as _html_to_md
+    except ImportError as exc:
+        raise RuntimeError(
+            "Do konwersji plików Word (.docx) potrzebna jest biblioteka 'markdownify'.\n"
+            "Zainstaluj ją poleceniem:\n"
+            "    pip install mammoth markdownify"
+        ) from exc
+
+    with open(docx_path, "rb") as f:
+        # Domyślna mapa stylów mammoth rozpoznaje wbudowane style Worda po ich
+        # wewnętrznym ID (zwykle angielskojęzycznym), ale część dokumentów -
+        # zwłaszcza pisanych w polskiej wersji Worda albo wyeksportowanych z
+        # innych narzędzi - ma nagłówki nazwane po polsku ("Nagłówek 1" itd.).
+        # Dodajemy jawną mapę dla najczęstszych wariantów, żeby takie nagłówki
+        # też trafiały do Markdown jako #, ## itd., a nie jako zwykły tekst.
+        style_map = """
+p[style-name='Heading 1'] => h1:fresh
+p[style-name='Heading 2'] => h2:fresh
+p[style-name='Heading 3'] => h3:fresh
+p[style-name='Heading 4'] => h4:fresh
+p[style-name='Title'] => h1:fresh
+p[style-name='Nagłówek 1'] => h1:fresh
+p[style-name='Nagłówek 2'] => h2:fresh
+p[style-name='Nagłówek 3'] => h3:fresh
+p[style-name='Nagłówek 4'] => h4:fresh
+p[style-name='Tytuł'] => h1:fresh
+"""
+        result = mammoth.convert_to_html(f, style_map=style_map)
+
+    for msg in result.messages:
+        # mammoth zgłasza np. niestandardowe style, które pominął - to nie błąd,
+        # ale warto o tym wiedzieć, więc logujemy na stderr, nie przerywając.
+        print(f"  [mammoth] {msg}", file=sys.stderr)
+
+    md = _html_to_md(result.value, heading_style="ATX", bullets="-")
+    return md.strip()
+
+
+def _convert_legacy_doc_to_docx(doc_path: Path, tmp_dir: Path) -> Path:
+    """
+    Stary format .doc to binarny format OLE (nie ZIP+XML jak .docx), więc mammoth
+    go nie obsłuży. Najwierniejszy sposób konwersji to automatyzacja Microsoft Word
+    przez pywin32 (jeśli Word jest zainstalowany na tym komputerze) - otwieramy
+    dokument i zapisujemy go od razu jako .docx, a dalej lecimy tym samym potokiem
+    co dla zwykłych plików .docx.
+    """
+    try:
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError(
+            "Stare pliki .doc wymagają automatycznej konwersji przez Microsoft Word, "
+            "a biblioteka 'pywin32' nie jest zainstalowana.\n"
+            "Zainstaluj ją poleceniem: pip install pywin32\n"
+            "Alternatywnie: otwórz ten plik ręcznie w Wordzie, zapisz jako .docx "
+            "('Zapisz jako' -> typ pliku 'Dokument Word (*.docx)') i przekonwertuj "
+            "ten nowy plik."
+        ) from exc
+
+    out_docx = tmp_dir / (doc_path.stem + "_converted.docx")
+    word = None
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        wd_doc = word.Documents.Open(str(doc_path), ReadOnly=True)
+        wd_doc.SaveAs(str(out_docx), FileFormat=16)  # 16 = wdFormatXMLDocument (.docx)
+        wd_doc.Close(False)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Nie udało się automatycznie przekonwertować pliku .doc przez Microsoft Word "
+            f"(błąd: {exc}).\n"
+            "Upewnij się, że Word jest zainstalowany na tym komputerze, albo otwórz "
+            "plik ręcznie i zapisz jako .docx."
+        ) from exc
+    finally:
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not out_docx.exists():
+        raise RuntimeError("Konwersja .doc -> .docx przez Word nie powiodła się (brak pliku wynikowego).")
+    return out_docx
+
+
+def convert_docx(
+    doc_path: str | Path,
+    output_path: str | Path | None = None,
+    config: ConversionConfig | None = None,
+    show_stats: bool = False,
+) -> Path:
+    """
+    Konwertuje plik Word (.docx lub stary .doc) na plik Markdown.
+    Zwraca ścieżkę do zapisanego pliku .md
+    """
+    doc_path = Path(doc_path)
+    if not doc_path.exists():
+        raise FileNotFoundError(f"Nie znaleziono pliku: {doc_path}")
+
+    config = config or ConversionConfig()
+
+    if output_path is None:
+        output_path = doc_path.with_suffix(".md")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_dir = output_path.parent / f".{output_path.stem}_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if doc_path.suffix.lower() == ".doc":
+            print(f"Przetwarzam: {doc_path.name} (stary format .doc -> konwertuję przez Word)")
+            actual_docx_path = _convert_legacy_doc_to_docx(doc_path, tmp_dir)
+        else:
+            print(f"Przetwarzam: {doc_path.name}")
+            actual_docx_path = doc_path
+
+        raw_md = _convert_docx_to_markdown(actual_docx_path)
+    finally:
+        # Sprzątanie - tak samo jak przy PDF, nie przerywamy konwersji, jeśli
+        # folder tymczasowy akurat jest zablokowany (np. przez OneDrive).
         try:
-            out_path = (output_dir / (pdf_path.stem + ".md")) if output_dir else None
-            convert_pdf(pdf_path, out_path, config)
-            ok.append(pdf_path)
+            for f in tmp_dir.glob("*"):
+                f.unlink()
+            tmp_dir.rmdir()
+        except OSError as exc:
+            print(
+                f"  [ostrzeżenie] nie udało się usunąć folderu tymczasowego {tmp_dir}: {exc}",
+                file=sys.stderr,
+            )
+
+    # Usuwamy odwołania do osadzonych obrazów - tak samo jak przy PDF
+    final_md = re.sub(r"!\[.*?\]\(.*?\)", "[obraz]", raw_md)
+
+    if config.collapse_whitespace:
+        final_md = _collapse_whitespace(final_md)
+
+    output_path.write_text(final_md, encoding="utf-8")
+    print(f"Zapisano: {output_path}")
+
+    if show_stats:
+        _print_stats_docx(doc_path, raw_md, final_md)
+
+    return output_path
+
+
+def _print_stats_docx(doc_path: Path, raw_md: str, final_md: str) -> None:
+    file_size_kb = doc_path.stat().st_size / 1024
+    raw_tokens = _estimate_tokens(raw_md)
+    final_chars = len(final_md)
+    final_tokens = _estimate_tokens(final_md)
+
+    print("\n--- Statystyki ---")
+    print(f"Rozmiar pliku:           {file_size_kb:.1f} KB")
+    print()
+    print("Wynikowy plik Markdown:")
+    print(f"  Znaków:                {_fmt_int(final_chars)}")
+    print(f"  Szac. liczba tokenów:  ~{_fmt_int(final_tokens)}")
+
+    if raw_tokens > final_tokens:
+        cleanup_saved = raw_tokens - final_tokens
+        print(f"\n(Czyszczenie białych znaków w tym pliku zaoszczędziło dodatkowo "
+              f"~{_fmt_int(cleanup_saved)} tokenów)")
+
+    print(
+        "\n* Uwaga: w odróżnieniu od PDF, pliki Word NIE są w Claude renderowane "
+        "jako obrazy stron - ich koszt tokenowy jest zbliżony do zwykłego tekstu. "
+        "Konwersja na Markdown daje tu przede wszystkim porządek i przewidywalny "
+        "format, a nie tak dużą oszczędność tokenów jak przy PDF."
+    )
+
+
+# ============================================================================
+# Obsługa arkuszy EXCEL (.xlsx oraz stary format .xls)
+# ============================================================================
+
+def _trim_empty_edges(rows: list[tuple]) -> list[tuple]:
+    """
+    Usuwa całkowicie puste wiersze i kolumny na brzegach danych. Excel często
+    "pamięta" znacznie większy zakres komórek niż faktyczne dane (np. po
+    wcześniejszym formatowaniu usuniętych już wierszy) - to jest pierwszy i
+    najprostszy sposób na uniknięcie wysyłania samych pustych komórek do AI.
+    """
+    def is_row_empty(row: tuple) -> bool:
+        return all(c is None or (isinstance(c, str) and c.strip() == "") for c in row)
+
+    start = 0
+    while start < len(rows) and is_row_empty(rows[start]):
+        start += 1
+    end = len(rows)
+    while end > start and is_row_empty(rows[end - 1]):
+        end -= 1
+    rows = rows[start:end]
+    if not rows:
+        return []
+
+    n_cols = max(len(r) for r in rows)
+    rows = [tuple(r) + (None,) * (n_cols - len(r)) for r in rows]
+
+    def is_col_empty(col_idx: int) -> bool:
+        return all(
+            r[col_idx] is None or (isinstance(r[col_idx], str) and r[col_idx].strip() == "")
+            for r in rows
+        )
+
+    col_start = 0
+    while col_start < n_cols and is_col_empty(col_start):
+        col_start += 1
+    col_end = n_cols
+    while col_end > col_start and is_col_empty(col_end - 1):
+        col_end -= 1
+
+    return [r[col_start:col_end] for r in rows]
+
+
+def _cell_to_str(value) -> str:
+    """Formatuje pojedynczą komórkę do tekstu w komórce tabeli Markdown."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TAK" if value else "NIE"
+    if isinstance(value, float):
+        # unikamy "3.0000000000000004" itp. - jeśli liczba całkowita, pokaż bez ".0"
+        text = str(int(value)) if value.is_integer() else f"{value:g}"
+    elif isinstance(value, datetime.datetime):
+        text = value.strftime("%Y-%m-%d") if value.time() == datetime.time(0, 0) else value.strftime("%Y-%m-%d %H:%M")
+    elif isinstance(value, datetime.date):
+        text = value.strftime("%Y-%m-%d")
+    else:
+        text = str(value)
+    # w komórce tabeli Markdown nie mogą być "|" ani znaki nowej linii
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _rows_to_markdown_table(rows: list[tuple]) -> str:
+    """Zamienia listę krotek (pierwszy wiersz = nagłówek) na tabelę Markdown."""
+    if not rows:
+        return ""
+    header, body = rows[0], rows[1:]
+
+    def fmt_row(row: tuple) -> str:
+        return "| " + " | ".join(_cell_to_str(v) for v in row) + " |"
+
+    lines = [fmt_row(header), "| " + " | ".join(["---"] * len(header)) + " |"]
+    lines.extend(fmt_row(r) for r in body)
+    return "\n".join(lines)
+
+
+def _convert_xlsx_to_markdown(xlsx_path: Path, config: ConversionConfig) -> tuple[str, list[dict]]:
+    """
+    Konwertuje skoroszyt .xlsx na Markdown, arkusz po arkuszu. Zwraca
+    (markdown, lista_raportów_per_arkusz) - ta druga wartość jest potrzebna
+    tylko do statystyk (--stats), żeby było widać co i dlaczego zostało
+    pominięte albo obcięte.
+    """
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise RuntimeError(
+            "Do konwersji arkuszy Excel (.xlsx) potrzebna jest biblioteka 'openpyxl'.\n"
+            "Zainstaluj ją poleceniem:\n"
+            "    pip install openpyxl"
+        ) from exc
+
+    wb = openpyxl.load_workbook(str(xlsx_path), data_only=True, read_only=True)
+
+    parts: list[str] = []
+    sheet_reports: list[dict] = []
+
+    for ws in wb.worksheets:
+        if config.xlsx_skip_hidden_sheets and ws.sheet_state != "visible":
+            sheet_reports.append({"name": ws.title, "skipped": "ukryty arkusz"})
+            continue
+
+        rows = _trim_empty_edges(list(ws.iter_rows(values_only=True)))
+        if not rows:
+            sheet_reports.append({"name": ws.title, "skipped": "pusty arkusz"})
+            continue
+
+        n_rows_total = len(rows)
+        n_cols = len(rows[0])
+        truncated = n_rows_total > config.xlsx_max_rows_per_sheet
+        if truncated:
+            rows = rows[: config.xlsx_max_rows_per_sheet]
+
+        section = f"## {ws.title}\n\n"
+        if truncated:
+            section += (
+                f"*(pokazano pierwsze {config.xlsx_max_rows_per_sheet} z {n_rows_total} "
+                f"wierszy - pełne dane w oryginalnym pliku)*\n\n"
+            )
+        section += _rows_to_markdown_table(rows)
+        parts.append(section)
+
+        sheet_reports.append(
+            {"name": ws.title, "rows": n_rows_total, "cols": n_cols, "truncated": truncated}
+        )
+
+    wb.close()
+    return "\n\n".join(parts).strip(), sheet_reports
+
+
+def _convert_legacy_xls_to_xlsx(xls_path: Path, tmp_dir: Path) -> Path:
+    """
+    Stary format .xls (binarny) konwertujemy do .xlsx przez automatyzację
+    Microsoft Excel (pywin32) - analogicznie do obsługi starych plików .doc.
+    """
+    try:
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError(
+            "Stare pliki .xls wymagają automatycznej konwersji przez Microsoft Excel, "
+            "a biblioteka 'pywin32' nie jest zainstalowana.\n"
+            "Zainstaluj ją poleceniem: pip install pywin32\n"
+            "Alternatywnie: otwórz ten plik ręcznie w Excelu i zapisz jako .xlsx."
+        ) from exc
+
+    out_xlsx = tmp_dir / (xls_path.stem + "_converted.xlsx")
+    excel = None
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        wb = excel.Workbooks.Open(str(xls_path), ReadOnly=True)
+        wb.SaveAs(str(out_xlsx), FileFormat=51)  # 51 = xlOpenXMLWorkbook (.xlsx)
+        wb.Close(False)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Nie udało się automatycznie przekonwertować pliku .xls przez Microsoft Excel "
+            f"(błąd: {exc}).\n"
+            "Upewnij się, że Excel jest zainstalowany na tym komputerze, albo otwórz "
+            "plik ręcznie i zapisz jako .xlsx."
+        ) from exc
+    finally:
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not out_xlsx.exists():
+        raise RuntimeError("Konwersja .xls -> .xlsx przez Excel nie powiodła się (brak pliku wynikowego).")
+    return out_xlsx
+
+
+def convert_xlsx(
+    path: str | Path,
+    output_path: str | Path | None = None,
+    config: ConversionConfig | None = None,
+    show_stats: bool = False,
+) -> Path:
+    """
+    Konwertuje arkusz Excel (.xlsx lub stary .xls) na plik Markdown.
+    Zwraca ścieżkę do zapisanego pliku .md
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Nie znaleziono pliku: {path}")
+
+    config = config or ConversionConfig()
+
+    if output_path is None:
+        output_path = path.with_suffix(".md")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_dir = output_path.parent / f".{output_path.stem}_tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if path.suffix.lower() == ".xls":
+            print(f"Przetwarzam: {path.name} (stary format .xls -> konwertuję przez Excel)")
+            actual_xlsx_path = _convert_legacy_xls_to_xlsx(path, tmp_dir)
+        else:
+            print(f"Przetwarzam: {path.name}")
+            actual_xlsx_path = path
+
+        raw_md, sheet_reports = _convert_xlsx_to_markdown(actual_xlsx_path, config)
+    finally:
+        try:
+            for f in tmp_dir.glob("*"):
+                f.unlink()
+            tmp_dir.rmdir()
+        except OSError as exc:
+            print(
+                f"  [ostrzeżenie] nie udało się usunąć folderu tymczasowego {tmp_dir}: {exc}",
+                file=sys.stderr,
+            )
+
+    final_md = raw_md
+    if config.collapse_whitespace:
+        final_md = _collapse_whitespace(final_md)
+
+    output_path.write_text(final_md, encoding="utf-8")
+    print(f"Zapisano: {output_path}")
+
+    if show_stats:
+        _print_stats_xlsx(path, final_md, sheet_reports, config)
+
+    return output_path
+
+
+def _print_stats_xlsx(
+    path: Path, final_md: str, sheet_reports: list[dict], config: ConversionConfig
+) -> None:
+    file_size_kb = path.stat().st_size / 1024
+    final_chars = len(final_md)
+    final_tokens = _estimate_tokens(final_md)
+
+    print("\n--- Statystyki ---")
+    print(f"Rozmiar pliku:           {file_size_kb:.1f} KB")
+    print(f"Arkuszy w pliku:         {len(sheet_reports)}")
+    for s in sheet_reports:
+        if "skipped" in s:
+            print(f"  - {s['name']}: pominięty ({s['skipped']})")
+        else:
+            trunc = "  [OBCIĘTY]" if s.get("truncated") else ""
+            print(f"  - {s['name']}: {s['rows']} wierszy x {s['cols']} kolumn{trunc}")
+    print()
+    print("Wynikowy plik Markdown:")
+    print(f"  Znaków:                {_fmt_int(final_chars)}")
+    print(f"  Szac. liczba tokenów:  ~{_fmt_int(final_tokens)}")
+    print(
+        f"\n* Uwaga: podobnie jak Word, arkusze Excel nie są w Claude renderowane jako\n"
+        f"  obrazy stron - realna oszczędność tokenów bierze się głównie z pomijania\n"
+        f"  ukrytych arkuszy, pustych wierszy/kolumn i obcinania bardzo dużych tabel\n"
+        f"  (limit: {config.xlsx_max_rows_per_sheet} wierszy/arkusz), a nie z samego formatu Markdown."
+    )
+
+
+def convert_document(
+    path: str | Path,
+    output_path: str | Path | None = None,
+    config: ConversionConfig | None = None,
+    show_stats: bool = False,
+) -> Path:
+    """
+    Rozpoznaje typ pliku po rozszerzeniu (.pdf / .docx / .doc / .xlsx / .xls) i
+    wywołuje właściwy konwerter. To wspólny punkt wejścia dla CLI i launchera
+    GUI, dzięki czemu oba nie muszą znać szczegółów obsługi każdego formatu.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return convert_pdf(path, output_path, config, show_stats)
+    if suffix in (".docx", ".doc"):
+        return convert_docx(path, output_path, config, show_stats)
+    if suffix in (".xlsx", ".xls"):
+        return convert_xlsx(path, output_path, config, show_stats)
+    raise ValueError(f"Nieobsługiwany typ pliku: {suffix} (obsługiwane: .pdf, .docx, .doc, .xlsx, .xls)")
+
+
+def convert_many(doc_paths: list[Path], output_dir: Path | None, config: ConversionConfig) -> None:
+    ok, failed = [], []
+    for doc_path in doc_paths:
+        try:
+            out_path = (output_dir / (doc_path.stem + ".md")) if output_dir else None
+            convert_document(doc_path, out_path, config)
+            ok.append(doc_path)
         except Exception as exc:  # noqa: BLE001
-            print(f"BŁĄD przy pliku {pdf_path.name}: {exc}", file=sys.stderr)
-            failed.append(pdf_path)
+            print(f"BŁĄD przy pliku {doc_path.name}: {exc}", file=sys.stderr)
+            failed.append(doc_path)
 
     print("\n--- Podsumowanie ---")
     print(f"Poprawnie skonwertowane: {len(ok)}")
@@ -586,18 +1147,22 @@ def convert_many(pdf_paths: list[Path], output_dir: Path | None, config: Convers
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Uniwersalny konwerter PDF -> Markdown (tekst cyfrowy + OCR skanów + "
-            "wierne tabele), zoptymalizowany pod tokeny AI."
+            "Uniwersalny konwerter PDF/DOCX/DOC/XLSX/XLS -> Markdown (tekst cyfrowy + OCR skanów + "
+            "wierne tabele, dokumenty Word przez mammoth, arkusze Excel przez openpyxl), "
+            "zoptymalizowany pod tokeny AI."
         ),
     )
-    parser.add_argument("pdf_files", nargs="+", help="Plik(i) PDF (obsługiwane wildcardy, np. *.pdf)")
+    parser.add_argument("input_files", nargs="+",
+                         help="Plik(i) PDF/DOCX/DOC/XLSX/XLS (obsługiwane wildcardy, np. *.pdf)")
     parser.add_argument("-o", "--output", help="Ścieżka pliku wyjściowego .md (tylko dla 1 pliku)")
     parser.add_argument("--output-dir", help="Katalog wyjściowy dla wielu plików")
-    parser.add_argument("--lang", default="pol+eng", help="Języki OCR wg kodów Tesseract (domyślnie: pol+eng)")
-    parser.add_argument("--dpi", type=int, default=300, help="Rozdzielczość renderowania skanów (domyślnie: 300)")
-    parser.add_argument("--force-ocr", action="store_true", help="Wymuś OCR na WSZYSTKICH stronach")
+    parser.add_argument("--lang", default="pol+eng", help="Języki OCR wg kodów Tesseract (domyślnie: pol+eng, dotyczy tylko PDF)")
+    parser.add_argument("--dpi", type=int, default=300, help="Rozdzielczość renderowania skanów (domyślnie: 300, dotyczy tylko PDF)")
+    parser.add_argument("--force-ocr", action="store_true", help="Wymuś OCR na WSZYSTKICH stronach (dotyczy tylko PDF)")
     parser.add_argument("--keep-headers", action="store_true",
-                         help="Nie usuwaj powtarzających się nagłówków/stopek")
+                         help="Nie usuwaj powtarzających się nagłówków/stopek (dotyczy tylko PDF)")
+    parser.add_argument("--max-rows", type=int, default=300,
+                         help="Limit wierszy na arkusz Excel (domyślnie: 300, dotyczy tylko XLSX/XLS)")
     parser.add_argument("--stats", action="store_true", help="Pokaż statystyki (rozmiar, szac. liczba tokenów)")
     return parser
 
@@ -606,11 +1171,18 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    pdf_paths = [Path(p) for p in args.pdf_files]
-    missing = [p for p in pdf_paths if not p.exists()]
+    input_paths = [Path(p) for p in args.input_files]
+    missing = [p for p in input_paths if not p.exists()]
     if missing:
         for m in missing:
             print(f"Nie znaleziono pliku: {m}", file=sys.stderr)
+        sys.exit(1)
+
+    supported = (".pdf", ".docx", ".doc", ".xlsx", ".xls")
+    unsupported = [p for p in input_paths if p.suffix.lower() not in supported]
+    if unsupported:
+        for u in unsupported:
+            print(f"Nieobsługiwany typ pliku: {u} (obsługiwane: {', '.join(supported)})", file=sys.stderr)
         sys.exit(1)
 
     config = ConversionConfig(
@@ -618,15 +1190,16 @@ def main() -> None:
         dpi=args.dpi,
         force_ocr=args.force_ocr,
         strip_repeated_headers=not args.keep_headers,
+        xlsx_max_rows_per_sheet=args.max_rows,
     )
 
-    if len(pdf_paths) == 1 and not args.output_dir:
-        convert_pdf(pdf_paths[0], args.output, config, show_stats=args.stats)
+    if len(input_paths) == 1 and not args.output_dir:
+        convert_document(input_paths[0], args.output, config, show_stats=args.stats)
     else:
         output_dir = Path(args.output_dir) if args.output_dir else None
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
-        convert_many(pdf_paths, output_dir, config)
+        convert_many(input_paths, output_dir, config)
 
 
 if __name__ == "__main__":
